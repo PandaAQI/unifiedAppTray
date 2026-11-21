@@ -778,6 +778,11 @@ PluginComponent {
     function draggableKind(entry) {
         if (!entry)
             return "";
+        // A pinned app that is running (or has a tray item) merges into a
+        // window/tray entry with kind preserved — kind alone would make it
+        // un-draggable until the app fully quits. Judge by isPinned first.
+        if (entry.isPinned === true && entry.pinnedAppId)
+            return "pinned";
         if (entry.kind === "tray" || entry.kind === "input")
             return "tray";
         if (entry.kind === "pinned")
@@ -790,9 +795,14 @@ PluginComponent {
         const items = root.displayedItems || [];
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
+            if (kind === "pinned") {
+                if (item.isPinned === true && item.pinnedAppId)
+                    out.push(String(item.pinnedAppId));
+                continue;
+            }
             if (draggableKind(item) !== kind)
                 continue;
-            out.push(kind === "tray" ? item.trayKey : String(item.pinnedAppId ?? ""));
+            out.push(item.trayKey);
         }
         return out;
     }
