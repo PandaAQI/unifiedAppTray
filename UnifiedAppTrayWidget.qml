@@ -23,6 +23,12 @@ PluginComponent {
     property int _toplevelsUpdateTrigger: 0
     property int _appIdSubstitutionsTrigger: 0
     property int _trayOrderTrigger: 0
+    // Bumped by CompositorService.workspaceStateChanged so workspace
+    // filtering re-runs even when the toplevel list itself is unchanged.
+    property int _workspaceTrigger: 0
+    // Tray keys whose NeedsAttention badge was already consumed by a
+    // click; cleaned silently once the app drops the state.
+    property var attentionConsumed: ({})
     property var trayPidMap: ({})
     property var trayNameMap: ({})
     property var hoveredItem: null
@@ -72,6 +78,18 @@ PluginComponent {
     readonly property bool showIndicators: root.cfg.showIndicators !== false
     readonly property bool showOverflowBadge: root.cfg.showOverflowBadge !== false
     readonly property bool showAttentionDots: root.cfg.showAttentionDots !== false
+    // Clicking a NeedsAttention tray item also consumes the badge locally;
+    // the app itself usually drops the state on Activate().
+    readonly property bool attentionClickDismiss: root.cfg.attentionClickDismiss !== false
+    // 0 = no fixed cap; with autoOverflow the section width decides.
+    // Auto mode keeps at least one slot for the overflow button.
+    readonly property bool autoOverflow: root.cfg.autoOverflow !== false
+    // Hide windows that live on other workspaces; same filter the built-in
+    // RunningApps applies via CompositorService.
+    readonly property bool filterByWorkspace: root.cfg.filterByWorkspace === true
+    // Injected by DMS's SurfaceWidgetHost binding model — the along-axis
+    // size actually available to this widget's bar section. 0 = unknown.
+    property real sectionAvailablePrimarySize: 0
     readonly property bool dimPassiveItems: root.cfg.dimPassiveItems !== false
     readonly property bool enlargeOnHover: root.cfg.enlargeOnHover !== false
     readonly property int enlargePercentage: {
@@ -98,6 +116,11 @@ PluginComponent {
             return 0;
         return Math.max(0, Math.min(50, value));
     }
+
+    // The cap actually used when slicing displayed entries: the explicit
+    // setting, optionally tightened by what fits in the section's
+    // available width (DMS injects sectionAvailablePrimarySize).
+    readonly property int effectiveMaxItems: root.maxVisibleItems
 
     readonly property real baseIconPixels: Theme.barIconSize(root.barThickness, undefined, root.barConfig?.maximizeWidgetIcons, root.barConfig?.iconScale)
     readonly property real iconPixels: Math.max(8, Math.round(root.baseIconPixels * root.iconSizePercent / 100))
@@ -229,6 +252,16 @@ PluginComponent {
 
         function onTrayItemOrderChanged() {
             root._trayOrderTrigger++;
+        }
+    }
+
+    Connections {
+        target: CompositorService
+
+        // Workspace switches don't always touch the toplevel list; this is
+        // what makes filterByWorkspace re-evaluate on every switch.
+        function onWorkspaceStateChanged() {
+            root._workspaceTrigger++;
         }
     }
 
@@ -2441,6 +2474,11 @@ PluginComponent {
     }
 
     function buildWindowGroups(toplevels) {
+        // Optional workspace scoping: the same filter the built-in
+        // RunningApps applies (niri/hyprland/aqueous aware). Re-evaluated
+        // on CompositorService.workspaceStateChanged via _workspaceTrigger.
+        if (root.filterByWorkspace && root.parentScreen)
+            toplevels = CompositorService.filterCurrentWorkspace(toplevels || [], root.parentScreen);
         const groups = {};
         const order = [];
         for (let i = 0; i < (toplevels || []).length; i++) {
@@ -2717,7 +2755,7 @@ PluginComponent {
     function buildDisplayedItems() {
         const items = root.unifiedItems || [];
         const hiddenItems = root.hiddenTrayEntries || [];
-        const maxItems = root.maxVisibleItems;
+        const maxItems = root.effectiveMaxItems;
         let displayed;
 
         if (maxItems <= 0 || items.length <= maxItems) {
@@ -2821,7 +2859,18 @@ PluginComponent {
             // without opening the tray menu. Passive means "registered but
             // idle", which we may dim.
             const sniStatus = Number(trayItem?.status ?? 1);
-            const needsAttention = !inputMethod && sniStatus === 2;
+            const displayKey = root.trayDisplayKey(trayItem);
+            // NeedsAttention badge; a click consumes it locally (the app
+            // normally drops the state on Activate() too). Once the app
+            // itself leaves the attention state, silently forget the
+            // consumption so a NEW attention event can light up again.
+            let needsAttention = !inputMethod && sniStatus === 2;
+            if (needsAttention && root.attentionConsumed[displayKey]) {
+                needsAttention = false;
+            } else if (sniStatus !== 2 && root.attentionConsumed) {
+                if (root.attentionConsumed[displayKey] !== undefined)
+                    delete root.attentionConsumed[displayKey];
+            }
             const isPassive = !inputMethod && sniStatus === 0 && windowCount === 0;
             const description = cleanText(trayItem?.tooltipDescription || "");
             const baseTooltip = inputMethod
@@ -2830,7 +2879,6 @@ PluginComponent {
             const tooltipWithDescription = description && description !== title
                 ? (baseTooltip + " — " + description)
                 : baseTooltip;
-            const displayKey = root.trayDisplayKey(trayItem);
             baseItems.push({
                 "key": "tray:" + displayKey,
                 "trayKey": displayKey,
@@ -3038,6 +3086,17 @@ PluginComponent {
         Quickshell.execDetached(action);
     }
 
+    // One click acknowledges the NeedsAttention badge: the reassign below
+    // rebuilds entries so the dot fades immediately, without waiting for
+    // the app to drop the SNI state on its own.
+    function consumeAttention(entry) {
+        if (!root.attentionClickDismiss || !entry || entry.needsAttention !== true || !entry.trayKey)
+            return;
+        const next = Object.assign({}, root.attentionConsumed);
+        next[entry.trayKey] = true;
+        root.attentionConsumed = next;
+    }
+
     function activateTrayItem(trayItem) {
         if (!trayItem)
             return;
@@ -3056,6 +3115,9 @@ PluginComponent {
             return;
         if (entry.kind === "overflow" || entry.kind === "hidden")
             return;
+        // Whatever path this click takes — cycling a window, focusing the
+        // matched tray window, or Activate() — the attention badge was seen.
+        root.consumeAttention(entry);
         if (entry.kind === "pinned") {
             launchPinnedApp(entry.pinnedAppId || entry.appId);
             return;
@@ -3088,6 +3150,7 @@ PluginComponent {
         if (entry.kind === "overflow" || entry.kind === "hidden" || entry.kind === "input")
             return;
         if (entry.trayItem && !(entry.windows?.length > 0)) {
+            root.consumeAttention(entry);
             entry.trayItem.secondaryActivate();
             return;
         }

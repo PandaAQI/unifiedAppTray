@@ -18,7 +18,7 @@ PluginSettings {
 
     StyledText {
         width: parent.width
-        text: I18n.tr("把固定应用、运行中的窗口和系统托盘合并到一条。左键点击聚焦或启动，中键关闭窗口或执行托盘备用操作，滚轮切换同应用的多个窗口，按住拖动可调整图标顺序，右键打开菜单。")
+        text: I18n.tr("把固定应用、运行中的窗口和系统托盘合并到一条。左键点击聚焦或启动，中键关闭窗口或执行托盘备用操作，滚轮切换同应用的多个窗口，按住拖动可调整图标顺序（运行中的应用也能拖），右键打开菜单。")
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
         wrapMode: Text.WordWrap
@@ -79,6 +79,27 @@ PluginSettings {
         label: I18n.tr("淡化闲置托盘")
         description: I18n.tr("没有窗口且处于被动状态的托盘图标降低不透明度，让活跃应用更醒目。")
         defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "attentionClickDismiss"
+        label: I18n.tr("点击即清除角标")
+        description: I18n.tr("点击带红点的托盘图标时，红点立即熄灭，不用等应用自己撤销提醒状态。")
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "autoOverflow"
+        label: I18n.tr("按可用宽度自动收纳")
+        description: I18n.tr("分区空间放不下的图标自动收进溢出菜单；关闭后按固定数量上限收纳。")
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "filterByWorkspace"
+        label: I18n.tr("只显示当前工作区")
+        description: I18n.tr("仅显示当前工作区的窗口，切到别的工作区时隐藏其余窗口；与内置运行应用行为一致。")
+        defaultValue: false
     }
 
     ToggleSetting {

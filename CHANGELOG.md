@@ -3,6 +3,29 @@
 本项目格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.1.0] — 2026-11-21
+
+近期路线三项落地。
+
+### 新增
+
+- 按可用宽度自动收纳（`autoOverflow`，默认开）：DMS 会把分区可用尺寸注入
+  `sectionAvailablePrimarySize`，插件据此算出能放下几个图标，放不下的收进
+  溢出菜单；与内置托盘同一套 DPR 换算。固定数量上限（`maxVisibleItems`）
+  仍然生效，两者取较小值。
+- 工作区过滤（`filterByWorkspace`，默认关）：只显示当前工作区的窗口，走
+  `CompositorService.filterCurrentWorkspace`，与内置运行应用行为一致；
+  工作区切换即时重算（监听 `workspaceStateChanged`）。
+- 红点点击即清（`attentionClickDismiss`，默认开）：点击带角标的托盘图标，
+  角标立即熄灭；应用自己撤销 SNI 状态后，下一次提醒能重新亮起。
+- 设置页新增三个对应开关。
+
+### 修复
+
+- 运行中的固定应用无法拖动排序（1.4.x 合并逻辑遗留）：合并体保留窗口
+  kind，拖拽判定只认纯固定 kind，应用退出前图标被冻结。改为按
+  `isPinned` 判定，运行中 / 有托盘 / 纯固定三种状态都可拖。
+
 ## [2.0.0] — 2026-11-21
 
 基于 1.4.1 的重构版本。交互对齐内置 dock，匹配逻辑统一，核心算法抽出可测。

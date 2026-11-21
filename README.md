@@ -83,7 +83,10 @@ dms restart
 | `enlargeOnHover` / `enlargePercentage` | true / 125 | 悬停放大 |
 | `iconSizePercent` | 100 | 图标大小（50–200%） |
 | `itemSpacing` | 4 | 图标间距（px） |
-| `maxVisibleItems` | 0 | 超出收进溢出菜单，0 = 全部显示 |
+| `autoOverflow` | true | 按分区可用宽度自动收纳 |
+| `filterByWorkspace` | false | 只显示当前工作区的窗口 |
+| `attentionClickDismiss` | true | 点击托盘图标即清除红点 |
+| `maxVisibleItems` | 0 | 固定数量上限（0 = 不限，与自动收纳取小） |
 | `showOverflowBadge` | true | 溢出按钮 +N 角标 |
 | `showLauncherButton` | false | 在最前显示启动器按钮 |
 
