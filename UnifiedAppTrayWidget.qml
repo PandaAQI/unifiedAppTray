@@ -584,16 +584,27 @@ PluginComponent {
                 }
 
                 // SNI NeedsAttention badge: the tray's standardized
-                // "look at me" state, shown as a pulsing dot in the corner.
+                // "look at me" state, shown as a pulsing dot. The badge
+                // sits on the corner DIAGONALLY OPPOSITE the bar's edge so
+                // it never crowds the running-window indicator lane:
+                // bottom bar -> top-left, top bar -> bottom-right, and the
+                // mirrored pair for vertical bars.
                 Rectangle {
                     id: attentionDot
                     visible: delegateRoot.needsAttention && root.showAttentionDots
                     width: Math.max(6, Math.round(root.iconPixels * 0.24))
                     height: width
                     radius: width / 2
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.rightMargin: -Math.round(width * 0.22)
+                    // Far side of the bar's edge; the sub-corner follows
+                    // the diagonal so all four bar edges get a distinct
+                    // badge corner.
+                    readonly property bool badgeOnLeft: root.isVertical
+                        ? delegateRoot.barEdge === "right"
+                        : delegateRoot.barEdge === "bottom"
+                    readonly property bool badgeOnTop: root.isVertical || delegateRoot.barEdge === "bottom"
+                    anchors.left: badgeOnLeft ? parent.left : parent.right
+                    anchors.top: badgeOnTop ? parent.top : parent.bottom
+                    anchors.leftMargin: -Math.round(width * 0.22)
                     anchors.topMargin: -Math.round(height * 0.22)
                     color: Theme.error
                     border.width: 1
