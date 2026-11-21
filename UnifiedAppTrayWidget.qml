@@ -78,6 +78,19 @@ PluginComponent {
     readonly property bool showIndicators: root.cfg.showIndicators !== false
     readonly property bool showOverflowBadge: root.cfg.showOverflowBadge !== false
     readonly property bool showAttentionDots: root.cfg.showAttentionDots !== false
+    // Which side the running-window dot lane hugs on horizontal bars:
+    // "auto" follows the bar edge; "top"/"bottom" pin it. The attention
+    // badge always mirrors to the opposite diagonal so the two states
+    // never share a side. Vertical bars keep the lane on the bar edge.
+    readonly property string indicatorSide: {
+        const value = String(root.cfg.indicatorSide ?? "auto");
+        return (value === "top" || value === "bottom") ? value : "auto";
+    }
+    readonly property bool laneOnTop: root.isVertical
+        ? false
+        : (root.indicatorSide === "top" ? true
+           : root.indicatorSide === "bottom" ? false
+           : root.axis?.edge !== "bottom")
     // Clicking a NeedsAttention tray item also consumes the badge locally;
     // the app itself usually drops the state on Activate().
     readonly property bool attentionClickDismiss: root.cfg.attentionClickDismiss !== false
@@ -585,23 +598,21 @@ PluginComponent {
 
                 // SNI NeedsAttention badge: the tray's standardized
                 // "look at me" state, shown as a pulsing dot. The badge
-                // sits on the corner DIAGONALLY OPPOSITE the bar's edge so
-                // it never crowds the running-window indicator lane:
-                // bottom bar -> top-left, top bar -> bottom-right, and the
-                // mirrored pair for vertical bars.
+                // mirrors the running-window lane across the diagonal so
+                // the two states never share a side. With the lane on its
+                // default side (bar edge) this matches the user's rule:
+                // bottom bar -> lane below, badge top-left; top bar ->
+                // lane above, badge bottom-right; vertical bars mirror.
                 Rectangle {
                     id: attentionDot
                     visible: delegateRoot.needsAttention && root.showAttentionDots
                     width: Math.max(6, Math.round(root.iconPixels * 0.24))
                     height: width
                     radius: width / 2
-                    // Far side of the bar's edge; the sub-corner follows
-                    // the diagonal so all four bar edges get a distinct
-                    // badge corner.
                     readonly property bool badgeOnLeft: root.isVertical
                         ? delegateRoot.barEdge === "right"
-                        : delegateRoot.barEdge === "bottom"
-                    readonly property bool badgeOnTop: root.isVertical || delegateRoot.barEdge === "bottom"
+                        : !root.laneOnTop
+                    readonly property bool badgeOnTop: root.isVertical || !root.laneOnTop
                     anchors.left: badgeOnLeft ? parent.left : parent.right
                     anchors.top: badgeOnTop ? parent.top : parent.bottom
                     anchors.leftMargin: -Math.round(width * 0.22)
@@ -654,7 +665,7 @@ PluginComponent {
                 id: indicatorSlot
                 visible: delegateRoot.dotCount > 0
                 x: root.isVertical ? (delegateRoot.barEdge === "left" ? 0 : parent.width - width) : 0
-                y: root.isVertical ? 0 : (delegateRoot.barEdge === "bottom" ? parent.height - height : 0)
+                y: root.isVertical ? 0 : (root.laneOnTop ? 0 : parent.height - height)
                 width: root.isVertical ? root.indicatorThickness : parent.width
                 height: root.isVertical ? parent.height : root.indicatorThickness
 

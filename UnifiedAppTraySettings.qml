@@ -138,6 +138,18 @@ PluginSettings {
         defaultValue: true
     }
 
+    SelectionSetting {
+        settingKey: "indicatorSide"
+        label: I18n.tr("指示点位置")
+        description: I18n.tr("运行窗口点贴哪一侧：自动跟随 bar 所在边，或固定在上/下。红点角标始终待在它的对角，两种状态不挤同一侧。")
+        options: [
+            { value: "auto", label: I18n.tr("自动（跟 bar 边）") },
+            { value: "top", label: I18n.tr("在上面") },
+            { value: "bottom", label: I18n.tr("在下面") }
+        ]
+        defaultValue: "auto"
+    }
+
     ToggleSetting {
         settingKey: "enlargeOnHover"
         label: I18n.tr("悬停放大")
