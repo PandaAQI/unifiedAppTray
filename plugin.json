@@ -2,7 +2,7 @@
   "id": "unifiedAppTray",
   "name": "统一应用托盘",
   "description": "把固定应用、运行窗口和系统托盘合并成一条，点击即可打开或聚焦。",
-  "version": "1.4.1",
+  "version": "2.0.0",
   "author": "dpxwz",
   "type": "widget",
   "capabilities": [

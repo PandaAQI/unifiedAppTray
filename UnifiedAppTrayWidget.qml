@@ -12,6 +12,7 @@ import qs.Modules.DBar.Widgets as DBarWidgets
 import qs.Modules.Plugins
 import qs.Services
 import qs.Widgets
+import "js/Matching.js" as Matching
 
 PluginComponent {
     id: root
@@ -21,11 +22,16 @@ PluginComponent {
     property int _desktopEntriesUpdateTrigger: 0
     property int _toplevelsUpdateTrigger: 0
     property int _appIdSubstitutionsTrigger: 0
+    property int _trayOrderTrigger: 0
     property var trayPidMap: ({})
     property var trayNameMap: ({})
     property var hoveredItem: null
     property var delegateItems: []
     property bool isAutoHideBar: false
+    // Live drag state, shared across delegates through the root so siblings
+    // can shift out of the way. Null when idle.
+    // { kind, trayKey, pinnedIndex, pressX, pressY, dragging, visualOffset, targetIndex }
+    property var dragState: null
     readonly property bool isAtBottom: root.axis?.edge === "bottom"
     readonly property real minTooltipY: {
         if (!parentScreen || !root.isVertical) {
@@ -65,6 +71,8 @@ PluginComponent {
     readonly property bool dedupeApps: root.cfg.dedupeApps !== false
     readonly property bool showIndicators: root.cfg.showIndicators !== false
     readonly property bool showOverflowBadge: root.cfg.showOverflowBadge !== false
+    readonly property bool showAttentionDots: root.cfg.showAttentionDots !== false
+    readonly property bool dimPassiveItems: root.cfg.dimPassiveItems !== false
     readonly property bool enlargeOnHover: root.cfg.enlargeOnHover !== false
     readonly property int enlargePercentage: {
         const value = Number(root.cfg.enlargePercentage ?? 125);
@@ -104,9 +112,18 @@ PluginComponent {
         SessionData.hiddenTrayIds;
         return root.availableTrayItems.filter(item => SessionData.isHiddenTrayId(root.getTrayItemKey(item)));
     }
+    // Honour the same persisted order as the built-in SystemTrayBar
+    // (SessionData.trayItemOrder), so tray ordering edited anywhere is
+    // respected here too. Items without a saved position keep their
+    // registration order.
+    readonly property var sortedTrayItems: {
+        root._trayOrderTrigger;
+        const saved = SessionData.trayItemOrder || [];
+        return TrayMenuManager.sortByPreferredOrder(root.availableTrayItems || [], saved);
+    }
     readonly property var allTrayItems: {
         SessionData.hiddenTrayIds;
-        return root.availableTrayItems.filter(item => !SessionData.isHiddenTrayId(root.getTrayItemKey(item)));
+        return root.sortedTrayItems.filter(item => !SessionData.isHiddenTrayId(root.getTrayItemKey(item)));
     }
     readonly property var hiddenTrayEntries: root.userHiddenTrayItems.map(item => ({
         "key": "hidden-tray:" + root.trayItemKey(item),
@@ -207,11 +224,23 @@ PluginComponent {
         }
     }
 
+    Connections {
+        target: SessionData
+
+        function onTrayItemOrderChanged() {
+            root._trayOrderTrigger++;
+        }
+    }
+
     onAllTrayItemsChanged: root.rescanTrayPids()
 
+    // The scan only feeds the tray->window PID/name hints; tray add/remove
+    // already triggers a rescan on its own. A slow heartbeat keeps hints
+    // fresh for long-lived trays (Steam respawning helpers etc.) without
+    // paying a busctl round-trip set every 30s.
     Timer {
         running: CompositorService.isNiri
-        interval: 30000
+        interval: 300000
         repeat: true
         triggeredOnStart: true
         onTriggered: root.rescanTrayPids()
@@ -220,7 +249,7 @@ PluginComponent {
     Process {
         id: trayPidScanner
         running: false
-        command: ["python3", "-c", root.trayPidScanScript]
+        command: ["python3", root.trayScanScriptPath]
         stdout: StdioCollector {
             onStreamFinished: root.parseTrayScan(text)
         }
@@ -392,6 +421,24 @@ PluginComponent {
             // tray tint here is what turned Steam into a flat grey circle that
             // never changed when a window opened.
             readonly property string iconUrl: entry.iconSource || ""
+            readonly property bool needsAttention: entry.needsAttention === true
+            readonly property bool isPassive: entry.isPassive === true
+            // Touchpad wheel accumulation, mirrors RunningApps.
+            property real scrollAccumulator: 0
+            // Offset applied while this delegate (or a sibling) is being
+            // dragged; horizontal bars shift x, vertical bars shift y.
+            readonly property real dragShift: {
+                const ds = root.dragState;
+                if (!ds || !ds.dragging || delegateRoot.isSpecialButton)
+                    return 0;
+                if (ds.key === entry.key)
+                    return ds.visualOffset;
+                const bareKey = ds.kind === "tray" ? entry.trayKey : String(entry.pinnedAppId ?? "");
+                const myIndex = ds.draggables.indexOf(bareKey);
+                if (myIndex < 0)
+                    return 0;
+                return TrayMenuManager.dragShiftOffset(myIndex, ds.draggedIndex, ds.targetIndex, ds.slotPitch);
+            }
 
             function isDotFocused(dotIndex) {
                 if (entry.isFocused !== true)
@@ -409,9 +456,12 @@ PluginComponent {
 
             width: root.isVertical ? root.itemCrossSize : root.iconPixels
             height: root.isVertical ? root.iconPixels : root.itemCrossSize
+            z: root.dragState?.dragging && root.dragState.key === entry.key ? 10 : 0
 
             Component.onCompleted: root.registerDelegateItem(delegateRoot)
-            Component.onDestruction: root.unregisterDelegateItem(delegateRoot)
+            // Plugin unload destroys the root before the last delegates;
+            // optional-chaining on the root itself keeps teardown quiet.
+            Component.onDestruction: root?.unregisterDelegateItem?.(delegateRoot)
 
             Item {
                 id: iconSlot
@@ -419,11 +469,26 @@ PluginComponent {
                 width: root.iconPixels
                 height: root.iconPixels
                 scale: delegateRoot.isSpecialButton ? 1 : delegateRoot.hoverScale
+                // Follows an active drag: the dragged icon glides under the
+                // cursor while siblings slide out of the way.
+                transform: Translate {
+                    x: root.isVertical ? 0 : delegateRoot.dragShift
+                    y: root.isVertical ? delegateRoot.dragShift : 0
+                }
+                // SNI Passive items are registered but idle (no windows);
+                // dim them so active work stays visually loud.
+                opacity: delegateRoot.isPassive && root.dimPassiveItems && !mouseArea.containsMouse ? 0.55 : 1
 
                 Behavior on scale {
                     NumberAnimation {
                         duration: Theme.shortDuration
                         easing.type: Easing.OutCubic
+                    }
+                }
+
+                Behavior on opacity {
+                    NumberAnimation {
+                        duration: Theme.shortDuration
                     }
                 }
 
@@ -482,6 +547,43 @@ PluginComponent {
                         font.pixelSize: Math.max(8, Math.round(root.iconPixels * 0.4))
                         color: Theme.primary
                         font.weight: Theme.fontWeightMedium
+                    }
+                }
+
+                // SNI NeedsAttention badge: the tray's standardized
+                // "look at me" state, shown as a pulsing dot in the corner.
+                Rectangle {
+                    id: attentionDot
+                    visible: delegateRoot.needsAttention && root.showAttentionDots
+                    width: Math.max(6, Math.round(root.iconPixels * 0.24))
+                    height: width
+                    radius: width / 2
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.rightMargin: -Math.round(width * 0.22)
+                    anchors.topMargin: -Math.round(height * 0.22)
+                    color: Theme.error
+                    border.width: 1
+                    border.color: Theme.surface
+
+                    SequentialAnimation on opacity {
+                        running: attentionDot.visible
+                        loops: Animation.Infinite
+                        alwaysRunToEnd: true
+
+                        NumberAnimation {
+                            from: 1
+                            to: 0.3
+                            duration: 900
+                            easing.type: Easing.InOutQuad
+                        }
+
+                        NumberAnimation {
+                            from: 0.3
+                            to: 1
+                            duration: 900
+                            easing.type: Easing.InOutQuad
+                        }
                     }
                 }
             }
@@ -581,15 +683,42 @@ PluginComponent {
                 id: mouseArea
                 anchors.fill: parent
                 hoverEnabled: true
-                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
                 cursorShape: Qt.PointingHandCursor
 
+                onPressed: mouse => {
+                    // Start tracking a potential reordering drag for tray and
+                    // pinned icons (windows keep compositor order).
+                    if (mouse.button === Qt.LeftButton)
+                        root.beginDrag(entry, mouse.x, mouse.y);
+                }
+
+                onPositionChanged: mouse => {
+                    if (root.dragState)
+                        root.updateDrag(mouse.x, mouse.y);
+                }
+
+                onReleased: mouse => {
+                    if (mouse.button === Qt.LeftButton && root.dragState) {
+                        // Swallow the click that follows a completed drag so
+                        // dropping an icon doesn't also "activate" it.
+                        if (root.finishDrag())
+                            root._suppressClickUntil = Date.now() + 150;
+                    }
+                }
+
                 onClicked: mouse => {
+                    if (mouse.button !== Qt.MiddleButton && Date.now() < root._suppressClickUntil)
+                        return;
                     if (mouse.button === Qt.LeftButton) {
                         if (entry.kind === "overflow")
                             root.openOverflowMenu(entry, mouseArea, mouse, delegateRoot);
                         else if (entry.kind === "hidden")
                             root.openHiddenItemsMenu(entry, mouseArea, mouse, delegateRoot);
+                        else if (entry.trayItem?.onlyMenu && entry.kind === "tray")
+                            // Menu-only tray items (no Activate()): left click
+                            // opens the menu, like the built-in tray.
+                            root.openContextMenu(entry, mouseArea, mouse, delegateRoot);
                         else
                             root.activateUnifiedItem(entry);
                     } else if (mouse.button === Qt.RightButton) {
@@ -599,6 +728,29 @@ PluginComponent {
                             root.openHiddenItemsMenu(entry, mouseArea, mouse, delegateRoot);
                         else
                             root.openContextMenu(entry, mouseArea, mouse, delegateRoot);
+                    } else if (mouse.button === Qt.MiddleButton) {
+                        root.middleClickUnifiedItem(entry);
+                    }
+                }
+
+                onWheel: wheel => {
+                    // Scroll cycles this entry's windows (mouse wheel steps
+                    // once; touchpad input accumulates like RunningApps).
+                    wheel.accepted = true;
+                    const windows = entry.windows || [];
+                    if (windows.length < 2)
+                        return;
+                    const deltaY = wheel.angleDelta.y;
+                    const isMouseWheel = Math.abs(deltaY) >= 120 && (Math.abs(deltaY) % 120) === 0;
+                    if (isMouseWheel) {
+                        root.stepWindowGroup(windows, deltaY);
+                        delegateRoot.scrollAccumulator = 0;
+                        return;
+                    }
+                    delegateRoot.scrollAccumulator += deltaY;
+                    if (Math.abs(delegateRoot.scrollAccumulator) >= 500) {
+                        root.stepWindowGroup(windows, delegateRoot.scrollAccumulator);
+                        delegateRoot.scrollAccumulator = 0;
                     }
                 }
 
@@ -617,11 +769,117 @@ PluginComponent {
         }
     }
 
+    // ---- Drag-to-reorder --------------------------------------------------
+    // Tray items persist into SessionData.trayItemOrder (the same store the
+    // built-in SystemTrayBar uses, so order is shared), pinned items into
+    // SessionData.barPinnedApps. Windows are not draggable: their order is
+    // compositor/workspace order.
+
+    function draggableKind(entry) {
+        if (!entry)
+            return "";
+        if (entry.kind === "tray" || entry.kind === "input")
+            return "tray";
+        if (entry.kind === "pinned")
+            return "pinned";
+        return "";
+    }
+
+    function draggablesFor(kind) {
+        const out = [];
+        const items = root.displayedItems || [];
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            if (draggableKind(item) !== kind)
+                continue;
+            out.push(kind === "tray" ? item.trayKey : String(item.pinnedAppId ?? ""));
+        }
+        return out;
+    }
+
+    function beginDrag(entry, pressX, pressY) {
+        if (root.dragState)
+            return;
+        const kind = draggableKind(entry);
+        if (!kind)
+            return;
+        const draggables = draggablesFor(kind);
+        const bareKey = kind === "tray" ? entry.trayKey : String(entry.pinnedAppId ?? "");
+        const draggedIndex = draggables.indexOf(bareKey);
+        if (draggedIndex < 0)
+            return;
+        root.hideTooltip();
+        const itemExtent = root.isVertical ? root.itemCrossSize : root.iconPixels;
+        root.dragState = {
+            "kind": kind,
+            "key": entry.key,
+            "draggables": draggables,
+            "draggedIndex": draggedIndex,
+            "targetIndex": draggedIndex,
+            "pressX": pressX,
+            "pressY": pressY,
+            "dragging": false,
+            "visualOffset": 0,
+            "slotPitch": itemExtent + root.itemSpacingSetting,
+            "vertical": !!root.isVertical
+        };
+    }
+
+    function updateDrag(posX, posY) {
+        const ds = root.dragState;
+        if (!ds)
+            return;
+        const delta = (ds.vertical ? posY - ds.pressY : posX - ds.pressX) || 0;
+        if (!ds.dragging && Math.abs(delta) < 10)
+            return;
+        const slot = Math.round(delta / ds.slotPitch);
+        const target = Math.max(0, Math.min(ds.draggables.length - 1, ds.draggedIndex + slot));
+        // Replace the object (not mutate) so bindings on dragState refresh.
+        root.dragState = Object.assign({}, ds, {
+            "dragging": true,
+            "visualOffset": delta,
+            "targetIndex": target
+        });
+    }
+
+    function finishDrag() {
+        const ds = root.dragState;
+        root.dragState = null;
+        if (!ds || !ds.dragging)
+            return false;
+        if (ds.targetIndex === ds.draggedIndex)
+            return true;
+        const fromKey = ds.draggables[ds.draggedIndex];
+        const toKey = ds.draggables[ds.targetIndex];
+        if (!fromKey || !toKey || fromKey === toKey)
+            return true;
+        if (ds.kind === "tray") {
+            const allKeys = (root.sortedTrayItems || []).map(item => root.trayDisplayKey(item));
+            const nextOrder = TrayMenuManager.reorderItemKeys(allKeys, fromKey, toKey);
+            if (nextOrder)
+                SessionData.setTrayItemOrder(nextOrder);
+        } else if (ds.kind === "pinned") {
+            const pinned = [...(SessionData.barPinnedApps || [])];
+            const fromIdx = pinned.indexOf(fromKey);
+            const toIdx = pinned.indexOf(toKey);
+            if (fromIdx >= 0 && toIdx >= 0 && fromIdx !== toIdx) {
+                const moved = pinned.splice(fromIdx, 1)[0];
+                pinned.splice(toIdx, 0, moved);
+                SessionData.setBarPinnedApps(pinned);
+            }
+        }
+        return true;
+    }
+
     Loader {
         id: tooltipLoader
         active: false
         sourceComponent: DankTooltip {}
     }
+
+    // Millisecond timestamp; a click landing within this window right after
+    // a finished drag is swallowed so dropping doesn't also activate.
+    property real _suppressClickUntil: 0
 
     function registerDelegateItem(item) {
         if (!item || root.delegateItems.indexOf(item) !== -1)
@@ -2068,25 +2326,20 @@ PluginComponent {
         TrayMenuManager.callContextMenuFallback(trayItemId, globalX, globalY);
     }
 
+    // ---- Matching.js forwarding -------------------------------------------
+    // One canonical matching vocabulary lives in js/Matching.js (shared
+    // with the Node unit tests). These thin forwards keep call sites
+    // short and give the hot norm() path a memo cache.
     function cleanText(value) {
-        return (value === undefined || value === null ? "" : value.toString()).replace(/[\u0009\u000a\u000d\u001f]/g, " ");
+        return Matching.cleanText(value);
     }
 
     function norm(value) {
-        return (value || "").toString().toLowerCase().replace(/[^a-z0-9]+/g, "");
+        return Matching.norm(value);
     }
 
     function uniq(values) {
-        const seen = new Set();
-        const out = [];
-        for (let i = 0; i < values.length; i++) {
-            const value = values[i];
-            if (!value || seen.has(value))
-                continue;
-            seen.add(value);
-            out.push(value);
-        }
-        return out;
+        return Matching.uniq(values);
     }
 
     function getTrayItemKey(item) {
@@ -2094,7 +2347,19 @@ PluginComponent {
     }
 
     function trayItemKey(item) {
+        // Join key for the PID-scan output. Matches the key format produced
+        // by scripts/tray_pid_scan.py (id US title US tooltip title).
+        // NOTE: this is a *matching* key, deliberately NOT the display key —
+        // titles change (VPN status, transfer rates), display keys must not.
         return cleanText(item?.id) + "\u001f" + cleanText(item?.title) + "\u001f" + cleanText(item?.tooltipTitle);
+    }
+
+    function trayDisplayKey(item) {
+        // Stable display/identity key, shared with the built-in tray via
+        // TrayMenuManager (id + ::n disambiguation, cached per item object).
+        // Using it for ScriptModel's objectProp keeps delegates alive across
+        // title churn and makes tray order interoperable with SystemTrayBar.
+        return TrayMenuManager.getTrayItemKey(item, root.availableTrayItems);
     }
 
     function trayTitle(item) {
@@ -2170,6 +2435,10 @@ PluginComponent {
         const order = [];
         for (let i = 0; i < (toplevels || []).length; i++) {
             const toplevel = toplevels[i];
+            // Respect apps that asked out of the switcher (same filter as
+            // the built-in RunningApps), e.g. scratchpad-adjacent helpers.
+            if (toplevel?.skipSwitcher)
+                continue;
             const appId = toplevel?.appId || "";
             if (!appId)
                 continue;
@@ -2192,15 +2461,7 @@ PluginComponent {
     }
 
     function trayNamesFor(trayItem) {
-        const names = [
-            norm(trayItem?.id),
-            norm(trayItem?.title),
-            norm(trayItem?.tooltipTitle)
-        ];
-        const iconBase = norm(((trayItem?.icon || "").toString().split("/").pop() || "").replace(/\.(png|svg|xpm|ico)$/i, ""));
-        if (iconBase)
-            names.push(iconBase);
-        return uniq(names).filter(s => s && s.length >= 2);
+        return Matching.trayNames(trayItem);
     }
 
     function procHintsForTrayItem(trayItem) {
@@ -2223,28 +2484,7 @@ PluginComponent {
     }
 
     function scoreNamesAgainstAppId(names, procHints, appIdValue) {
-        const appId = norm(appIdValue);
-        if (!appId)
-            return 0;
-        const lastSeg = norm((appIdValue || "").toString().split(".").pop());
-        let score = 0;
-        for (let i = 0; i < names.length; i++) {
-            const candidate = names[i];
-            if (appId === candidate)
-                score = Math.max(score, 100);
-            else if (lastSeg && lastSeg === candidate)
-                score = Math.max(score, 95);
-            else if (candidate.length >= 4 && appId.length >= 4 && (appId.includes(candidate) || candidate.includes(appId)))
-                score = Math.max(score, 70);
-        }
-        for (let i = 0; i < procHints.length; i++) {
-            const candidate = procHints[i];
-            if (appId === candidate)
-                score = Math.max(score, 90);
-            else if (lastSeg && lastSeg === candidate)
-                score = Math.max(score, 85);
-        }
-        return score;
+        return Matching.scoreAgainstAppId(names, procHints, appIdValue);
     }
 
     function findWindowGroupsForTrayItem(trayItem, groups) {
@@ -2394,10 +2634,15 @@ PluginComponent {
         const ids = entryMatchIds(entry);
         if (variants.some(value => ids.indexOf(value) !== -1))
             return true;
-        // Tray-only apps often expose a friendly title (e.g. "FlClash") instead of
-        // their desktop id (com.follow.clash). Match by the desktop entry name too.
+        // Tray-only apps often expose a friendly title (e.g. "FlClash")
+        // instead of their desktop id (com.follow.clash). Match by the
+        // desktop entry name too, then fall back to the same loose
+        // containment vocabulary the window matcher uses, so a pinned id,
+        // a running window and a tray item can never disagree about
+        // "same app" and render twice.
         const desktopName = norm(desktopEntryForAppId(id)?.name);
-        return desktopName.length > 0 && ids.indexOf(desktopName) !== -1;
+        const targets = desktopName.length > 0 ? variants.concat([desktopName]) : variants;
+        return Matching.looseMatchIds(ids, targets);
     }
 
     function canonicalPinnedIdForEntry(entry) {
@@ -2484,6 +2729,8 @@ PluginComponent {
                 "tooltipText": I18n.tr("%1 more apps").arg(overflowItems.length),
                 "windowCount": overflowItems.length,
                 "isFocused": false,
+                "needsAttention": false,
+                "isPassive": false,
                 "isPinned": false
             });
         }
@@ -2502,6 +2749,8 @@ PluginComponent {
                 "tooltipText": I18n.tr("隐藏的托盘图标 (%1)").arg(hiddenItems.length),
                 "windowCount": 0,
                 "isFocused": false,
+                "needsAttention": false,
+                "isPassive": false,
                 "isPinned": false
             });
         }
@@ -2556,8 +2805,25 @@ PluginComponent {
             }
 
             const title = trayTitle(trayItem);
+            // SNI status: 0 Passive, 1 Active, 2 NeedsAttention. NeedsAttention
+            // is the tray's only standardized "something happened, look at me"
+            // signal — surface it so a muted chat or a failed sync is visible
+            // without opening the tray menu. Passive means "registered but
+            // idle", which we may dim.
+            const sniStatus = Number(trayItem?.status ?? 1);
+            const needsAttention = !inputMethod && sniStatus === 2;
+            const isPassive = !inputMethod && sniStatus === 0 && windowCount === 0;
+            const description = cleanText(trayItem?.tooltipDescription || "");
+            const baseTooltip = inputMethod
+                ? ("Input Method: " + title)
+                : (windowCount > 0 ? (title + " (" + windowCount + " windows)") : title);
+            const tooltipWithDescription = description && description !== title
+                ? (baseTooltip + " — " + description)
+                : baseTooltip;
+            const displayKey = root.trayDisplayKey(trayItem);
             baseItems.push({
-                "key": "tray:" + root.trayItemKey(trayItem),
+                "key": "tray:" + displayKey,
+                "trayKey": displayKey,
                 "kind": inputMethod ? "input" : "tray",
                 "trayItem": trayItem,
                 "windows": windows,
@@ -2565,9 +2831,11 @@ PluginComponent {
                 "appId": appId,
                 "iconSource": trayIconSourceFor(trayItem),
                 "fallbackText": trayFallbackText(trayItem),
-                "tooltipText": inputMethod ? ("Input Method: " + title) : (windowCount > 0 ? (title + " (" + windowCount + " windows)") : title),
+                "tooltipText": tooltipWithDescription,
                 "windowCount": windowCount,
                 "isFocused": focused,
+                "needsAttention": needsAttention,
+                "isPassive": isPassive,
                 "isPinned": false,
                 "updateMenu": function () {
                     if (!trayItem || !trayItem.hasMenu || !trayItem.menu)
@@ -2596,6 +2864,8 @@ PluginComponent {
                 "tooltipText": name + (group.windows.length > 1 ? (" (" + group.windows.length + " windows)") : (title ? " - " + title : "")),
                 "windowCount": group.windows.length,
                 "isFocused": group.isFocused,
+                "needsAttention": false,
+                "isPassive": false,
                 "isPinned": false
             });
         }
@@ -2650,6 +2920,8 @@ PluginComponent {
                     "tooltipText": pinnedName,
                     "windowCount": 0,
                     "isFocused": false,
+                    "needsAttention": false,
+                    "isPassive": false,
                     "isPinned": true,
                     "pinnedAppId": pinnedId
                 });
@@ -2676,18 +2948,36 @@ PluginComponent {
         return pinnedItems.concat(rest);
     }
 
-    function activateWindowGroup(windows) {
+    // Dock-style click semantics (matches built-in RunningApps):
+    // one window -> toggle (focus / minimize where supported),
+    // several windows -> cycle to the next one, all through
+    // CompositorService so minimize-restore and Niri overview closing are
+    // handled in one place instead of raw toplevel.activate() calls.
+    function cycleWindowGroup(windows) {
         if (!windows || !windows.length)
             return false;
-
-        let target = windows[0];
-        if (windows.length > 1) {
-            const focusedIndex = windows.findIndex(w => w.activated);
-            target = windows[(focusedIndex + 1) % windows.length];
+        if (windows.length === 1) {
+            CompositorService.toggleToplevel(windows[0]);
+            return true;
         }
+        const focusedIndex = windows.findIndex(w => w.activated);
+        const next = windows[(focusedIndex + 1) % windows.length];
+        CompositorService.activateToplevel(next);
+        return true;
+    }
 
-        if (target && typeof target.activate === "function") {
-            target.activate();
+    // Step through an entry's windows by wheel/touchpad direction.
+    // Mirrors RunningApps: discrete 120 clicks step once, touchpad input
+    // accumulates against a threshold so two-finger scrolls don't jump.
+    function stepWindowGroup(windows, delta) {
+        if (!windows || windows.length < 2)
+            return false;
+        const currentIndex = windows.findIndex(w => w.activated);
+        const nextIndex = delta < 0
+            ? (currentIndex === -1 ? 0 : Math.min(currentIndex + 1, windows.length - 1))
+            : (currentIndex === -1 ? windows.length - 1 : Math.max(currentIndex - 1, 0));
+        if (nextIndex !== currentIndex) {
+            CompositorService.activateToplevel(windows[nextIndex]);
             return true;
         }
         return false;
@@ -2754,9 +3044,8 @@ PluginComponent {
     function activateUnifiedItem(entry) {
         if (!entry)
             return;
-        if (entry.kind === "overflow") {
+        if (entry.kind === "overflow" || entry.kind === "hidden")
             return;
-        }
         if (entry.kind === "pinned") {
             launchPinnedApp(entry.pinnedAppId || entry.appId);
             return;
@@ -2766,16 +3055,35 @@ PluginComponent {
                 entry.trayItem.activate();
             return;
         }
-        if (activateWindowGroup(entry.windows))
+        if (cycleWindowGroup(entry.windows))
             return;
+        // Niri-only fallback: tray matched against NiriService windows when
+        // no Quickshell toplevel exists for them.
         if (focusNiriWindowGroup(entry.niriWindows))
             return;
-        // A pinned app whose tray item is a launcher (Steam, FlClash) must bring
-        // its window forward instead of only re-running Activate().
+        // A pinned app whose tray item is a launcher (Steam, FlClash) must
+        // bring its window forward instead of only re-running Activate().
         if (entry.trayItem && focusExistingWindowForTrayItem(entry.trayItem))
             return;
         if (entry.trayItem)
             activateTrayItem(entry.trayItem);
+    }
+
+    // Middle-click semantics: close the focused window of a window entry
+    // (single-window entries just close it), or fire the tray item's
+    // SecondaryActivate (SNI's designated alternate action).
+    function middleClickUnifiedItem(entry) {
+        if (!entry)
+            return;
+        if (entry.kind === "overflow" || entry.kind === "hidden" || entry.kind === "input")
+            return;
+        if (entry.trayItem && !(entry.windows?.length > 0)) {
+            entry.trayItem.secondaryActivate();
+            return;
+        }
+        const target = entry.windows?.find(w => w.activated) || entry.windows?.[0];
+        if (target && typeof target.close === "function")
+            target.close();
     }
 
     function showTooltip(anchorItem, text) {
@@ -2842,115 +3150,17 @@ PluginComponent {
         root.trayNameMap = nameMap;
     }
 
-    readonly property string trayPidScanScript: `
-import json, subprocess, os, sys, re
-SNI = "org.kde.StatusNotifierItem"
-SEP = chr(31)
-GENERIC = set(["electron", "node", "nodejs", "python", "python3", "sh", "bash", "zsh", "dash", "env", "wrapper", "sleep", "cat", "app", "main", "exe"])
-def norm(s):
-    return re.sub("[^a-z0-9]+", "", (s or "").lower())
-def bus(args):
-    try:
-        r = subprocess.run(["busctl", "--user", "--json=short"] + args, capture_output=True, text=True, timeout=2)
-        if r.returncode != 0:
-            return None
-        return json.loads(r.stdout)
-    except Exception:
-        return None
-def conn_pid(svc):
-    j = bus(["call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", svc])
-    try:
-        d = j["data"]
-        return int(d[0] if isinstance(d, list) else d)
-    except Exception:
-        return None
-def get_all(svc, path):
-    j = bus(["call", svc, path, "org.freedesktop.DBus.Properties", "GetAll", "s", SNI])
-    try:
-        return j["data"][0]
-    except Exception:
-        return {}
-def val(d, k):
-    v = d.get(k)
-    return v.get("data") if isinstance(v, dict) else None
-def clean(s):
-    if s is None:
-        return ""
-    s = str(s)
-    for c in (chr(31), chr(9), chr(10), chr(13)):
-        s = s.replace(c, " ")
-    return s
-def child_map():
-    cm = {}
-    for pid in os.listdir("/proc"):
-        if not pid.isdigit():
-            continue
-        try:
-            fh = open("/proc/" + pid + "/stat")
-            data = fh.read()
-            fh.close()
-            ppid = int(data.rsplit(")", 1)[1].split()[1])
-            cm.setdefault(ppid, []).append(int(pid))
-        except Exception:
-            pass
-    return cm
-def subtree(root_pid, cm):
-    seen = set()
-    stack = [root_pid]
-    while stack:
-        p = stack.pop()
-        if p in seen:
-            continue
-        seen.add(p)
-        stack.extend(cm.get(p, []))
-    return sorted(seen)
-def proc_names(pid):
-    names = []
-    try:
-        fh = open("/proc/" + str(pid) + "/comm")
-        names.append(fh.read().strip())
-        fh.close()
-    except Exception:
-        pass
-    try:
-        names.append(os.path.basename(os.readlink("/proc/" + str(pid) + "/exe")))
-    except Exception:
-        pass
-    return names
-j = bus(["get-property", "org.kde.StatusNotifierWatcher", "/StatusNotifierWatcher", "org.kde.StatusNotifierWatcher", "RegisteredStatusNotifierItems"])
-try:
-    entries = j["data"]
-except Exception:
-    entries = []
-cm = child_map()
-out = []
-for e in entries:
-    try:
-        if "/" in e:
-            svc, path = e.split("/", 1)
-            path = "/" + path
-        else:
-            svc = e
-            path = "/StatusNotifierItem"
-        pid = conn_pid(svc)
-        if pid is None:
-            continue
-        d = get_all(svc, path)
-        iid = clean(val(d, "Id"))
-        title = clean(val(d, "Title"))
-        tt = val(d, "ToolTip")
-        tttitle = clean(tt[2]) if isinstance(tt, list) and len(tt) > 2 else ""
-        pids = subtree(pid, cm)
-        hints = set()
-        for p in pids:
-            for nm in proc_names(p):
-                n = norm(nm)
-                if len(n) >= 2 and n not in GENERIC:
-                    hints.add(n)
-        key = iid + SEP + title + SEP + tttitle
-        out.append(key + chr(9) + ",".join(str(x) for x in pids) + chr(9) + ",".join(sorted(hints)))
-    except Exception:
-        pass
-sys.stdout.write(chr(10).join(out))
-`
+    readonly property string trayScanScriptPath: {
+        // The scan script ships beside this QML file. Resolve relative to
+        // the QML document itself so the plugin works from any install
+        // prefix; fall back to the standard DMS plugin path if the engine
+        // ever hands us a bare URL.
+        const resolved = Qt.resolvedUrl("./scripts/tray_pid_scan.py").toString();
+        if (resolved.startsWith("file://"))
+            return resolved.substring("file://".length);
+        const home = Quickshell.env("HOME") || "";
+        if (home)
+            return home + "/.config/dms/plugins/unifiedAppTray/scripts/tray_pid_scan.py";
+        return resolved;
+    }
 }

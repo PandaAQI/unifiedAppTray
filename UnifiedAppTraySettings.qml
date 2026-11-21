@@ -18,7 +18,7 @@ PluginSettings {
 
     StyledText {
         width: parent.width
-        text: I18n.tr("把固定应用、运行中的窗口和系统托盘合并到一条。右键图标可以固定或取消固定。")
+        text: I18n.tr("把固定应用、运行中的窗口和系统托盘合并到一条。左键点击聚焦或启动，中键关闭窗口或执行托盘备用操作，滚轮切换同应用的多个窗口，按住拖动可调整图标顺序，右键打开菜单。")
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
         wrapMode: Text.WordWrap
@@ -64,6 +64,20 @@ PluginSettings {
         settingKey: "dedupeApps"
         label: I18n.tr("合并重复应用")
         description: I18n.tr("同一个应用同时是固定应用、运行窗口或托盘图标时只显示一次，固定应用优先。")
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "showAttentionDots"
+        label: I18n.tr("需要关注角标")
+        description: I18n.tr("托盘应用报告需要关注时（如新消息、同步失败），在图标角落显示闪烁圆点。")
+        defaultValue: true
+    }
+
+    ToggleSetting {
+        settingKey: "dimPassiveItems"
+        label: I18n.tr("淡化闲置托盘")
+        description: I18n.tr("没有窗口且处于被动状态的托盘图标降低不透明度，让活跃应用更醒目。")
         defaultValue: true
     }
 

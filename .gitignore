@@ -1,0 +1,10 @@
+# editor / tooling droppings
+*.swp
+*.user
+*.kdev4
+.idea/
+.vscode/
+
+# local test scratch
+node_modules/
+*.log

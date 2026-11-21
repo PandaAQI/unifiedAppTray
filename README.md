@@ -1,160 +1,138 @@
-# Unified App Tray
+# Unified App Tray（统一应用托盘）
 
 [![DMS Plugin](https://img.shields.io/badge/DankMaterialShell-plugin-4f7cff)](#)
 [![Niri](https://img.shields.io/badge/Niri-focused-22a06b)](#)
-[![Version](https://img.shields.io/badge/version-1.0.0-informational)](./CHANGELOG.md)
-[![License](https://img.shields.io/badge/license-MIT-lightgrey)](./LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)](./LICENSE)
+[![Tests](https://img.shields.io/badge/tests-node%20js/Matching.js-2ea44f)](./tests)
 
-Unified App Tray is a DankMaterialShell DankBar widget that merges the built-in
-Running Apps and System Tray widgets into one compact launcher/focus strip.
+DankMaterialShell DankBar 小部件：把「固定应用」「运行窗口」「系统托盘」合并成一条，
+点击即可聚焦或启动。Unified App Tray merges DMS's pinned apps, running
+windows and StatusNotifier tray into one compact launcher/focus strip.
 
-It is built for Niri setups where tray icons should behave like app icons:
-click an app that already has a window and the shell focuses it; click a
-background app without a window and the app opens normally.
+> Fork of dpxwz/unifiedAppTray 1.4.1 (upstream no longer published), rebuilt
+> with dock-grade interaction, a unified matching core and tests.
 
-## Features
+## 功能一览
 
-- Shows StatusNotifier system tray apps.
-- Shows apps with currently open windows.
-- Shows input method tray items such as Fcitx and IBus.
-- Deduplicates tray apps that already have visible windows.
-- Cycles between multiple windows of the same app.
-- Preserves DMS tray icon tint settings.
-- Uses DMS theme, icon sizing, hover states, and tooltips.
-
-## Click Behavior
-
-| Item type | Click result |
+| 操作 | 行为 |
 | --- | --- |
-| App with an open window | Focuses that window. If multiple windows exist, repeated clicks cycle them. |
-| Tray app without an open window | Calls the tray item's normal `activate()` action, usually opening the app window. |
-| Input method tray item | Calls the tray item's normal `activate()` action, keeping language/input switching intact. |
+| 左键（有窗口） | 单窗口聚焦/最小化切换；多窗口循环切换 |
+| 左键（托盘应用） | 聚焦已有窗口，否则激活托盘；只有菜单的托盘项直接开菜单 |
+| 左键（固定应用） | 启动应用；已有窗口时先聚焦 |
+| 中键 | 窗口项：关闭当前窗口；托盘项：调用 SNI `SecondaryActivate` |
+| 右键 | 应用菜单（窗口列表 + 固定 + 新建窗口 + 关闭） |
+| 滚轮 | 在同应用的多个窗口间切换（支持触控板累积阈值） |
+| 按住拖动 | 调整托盘图标 / 固定应用顺序，与内置托盘顺序互通 |
+| 角标 | 托盘报告 `NeedsAttention` 时图标角落闪烁红点 |
+| 淡化 | 无窗口的 `Passive` 托盘项降低不透明度 |
 
-## Requirements
+其他能力：
 
-- DankMaterialShell with plugin support.
-- Quickshell.
-- Niri for compositor-driven window focus.
-- `python3` and `busctl` for tray-to-window matching.
-- A StatusNotifier tray provider, normally already available in DMS.
+- 托盘项与窗口的去重共用同一套匹配口径（精确 + 宽松包含），不再出现同一应用画两次。
+- 图标身份 key 与 DMS 内置托盘一致（`TrayMenuManager.getTrayItemKey`），标题变化不再导致闪烁。
+- 尊重 `skip_switcher` 的窗口不进列表（与内置 RunningApps 相同）。
+- 托盘图标着色、悬停放大、指示点、溢出菜单、隐藏项恢复等原有能力全部保留。
+- PID 扫描脚本外置为 `scripts/tray_pid_scan.py`（`python3` + `busctl`），可独立运行与调试。
 
-The widget still displays tray items outside Niri, but focus-existing-window
-behavior depends on Niri's compositor IPC.
+## 环境要求
 
-## Installation
+- DankMaterialShell（含插件系统）+ Quickshell
+- Niri（聚焦/最小化走 `CompositorService`，窗口聚焦在其他合成器上由 Quickshell toplevel 后端兜底）
+- `python3`、`busctl`（托盘→窗口 PID 匹配）
+- Node.js（仅跑测试时需要）
 
-Clone this repository into your DMS plugin directory:
+## 安装
 
 ```bash
-git clone https://github.com/dpxwz/unifiedAppTray.git \
-  ~/.config/DankMaterialShell/plugins/unifiedAppTray
-```
+git clone https://github.com/<你的用户名>/unifiedAppTray.git \
+  ~/.config/dms/plugins/unifiedAppTray
 
-Enable the plugin:
-
-```bash
 dms ipc plugins enable unifiedAppTray
 ```
 
-Then add `unifiedAppTray` to a DankBar section in DMS settings. For a clean
-replacement, disable the built-in `runningApps` and `systemTray` widgets on the
-same bar.
+在 DMS 设置里把 `unifiedAppTray` 加进 DankBar 任意分区；建议关掉同栏的内置
+`runningApps` 与 `systemTray`：
 
-Restart DMS if the bar does not update immediately:
+```json
+{ "id": "runningApps", "enabled": false }
+```
+
+```json
+{ "id": "systemTray", "enabled": false }
+```
+
+改完不生效就重启：
 
 ```bash
 dms restart
 ```
 
-## Recommended DankBar Layout
+## 配置项
 
-The widget is designed to sit where the system tray normally lives:
+设置入口：DMS 设置 → 插件 → 统一应用托盘。
 
-```json
-{
-  "id": "unifiedAppTray",
-  "enabled": true
-}
-```
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `showPinnedApps` | true | 显示固定应用 |
+| `showRunningApps` | true | 显示运行窗口 |
+| `showTrayItems` | true | 显示托盘/输入法图标 |
+| `dedupeApps` | true | 三源去重，固定优先 |
+| `showAttentionDots` | true | NeedsAttention 闪烁角标 |
+| `dimPassiveItems` | true | 淡化闲置托盘项 |
+| `showIndicators` | true | 运行指示点 |
+| `enlargeOnHover` / `enlargePercentage` | true / 125 | 悬停放大 |
+| `iconSizePercent` | 100 | 图标大小（50–200%） |
+| `itemSpacing` | 4 | 图标间距（px） |
+| `maxVisibleItems` | 0 | 超出收进溢出菜单，0 = 全部显示 |
+| `showOverflowBadge` | true | 溢出按钮 +N 角标 |
+| `showLauncherButton` | false | 在最前显示启动器按钮 |
 
-For the old widgets:
+## 工作原理
 
-```json
-{
-  "id": "runningApps",
-  "enabled": false
-}
-```
+三个数据源合成一条列表：
 
-```json
-{
-  "id": "systemTray",
-  "enabled": false
-}
-```
+1. **固定应用**：`SessionData.barPinnedApps`（与内置 dock 共用）。
+2. **运行窗口**：`CompositorService.sortedToplevels`（过滤 `skipSwitcher`）。
+3. **托盘**：`SystemTray.items.values`（尊重 `SessionData.trayItemOrder` 顺序与手动隐藏）。
 
-## How It Works
+托盘项与窗口的关联链：PID 子树精确匹配 → 进程名/托盘名打分 → desktop entry
+兜底，全部实现在 `js/Matching.js`（纯函数、零 Qt 依赖）。固定应用判定在精确
+匹配之上增加宽松包含匹配，保证「固定 id ↔ 窗口 ↔ 托盘图标」对同一应用判定一致。
 
-Unified App Tray combines two DMS data sources:
+点击行为统一走 `CompositorService.activateToplevel` / `toggleToplevel`（自动处理
+最小化恢复与 Niri overview 关闭）；Niri 独有窗口走 `NiriService.focusWindow`。
 
-- `SystemTray.items.values` for background tray apps and input methods.
-- `CompositorService.sortedToplevels` for currently open windows.
+托盘 PID 扫描：`scripts/tray_pid_scan.py` 通过 `busctl` 枚举 SNI 项、解析
+连接 PID 并展开进程子树。心跳间隔 5 分钟（托盘增删会即时重扫），单项约 0.1s。
 
-On Niri, it also uses `NiriService.windows` and compositor IPC to focus windows
-directly. This avoids the common Wayland limitation where applications cannot
-raise their own existing windows from a tray activation request.
+调试开关：`DMS_TRAY_NO_FOCUS=1` 环境变量可禁用「聚焦已有窗口」覆盖逻辑。
 
-The matching strategy is intentionally conservative:
-
-- First match tray item owners to process trees and window PIDs.
-- Fall back to normalized tray names, tooltip names, icon names, and process
-  names against Niri `app_id` values.
-- Treat Fcitx, IBus, and input-method tray items as switchers, not app windows.
-
-## Troubleshooting
-
-Check plugin status:
+## 开发
 
 ```bash
-dms ipc plugins list | grep unifiedAppTray
-dms ipc widget list | grep unifiedAppTray
-```
+# 匹配库单测（Node，零依赖）
+node tests/test_matching.js
 
-Read DMS logs:
+# 独立运行 PID 扫描脚本
+python3 scripts/tray_pid_scan.py
 
-```bash
-qs -p /usr/share/quickshell/dms log | tail -n 200
-```
-
-If a specific tray app does not focus correctly, verify that Niri reports a
-useful `app_id` for it:
-
-```bash
-niri msg -j windows
-```
-
-Set `DMS_TRAY_NO_FOCUS=1` before launching DMS to disable the focus override and
-fall back to plain tray activation.
-
-## Development
-
-Useful local commands:
-
-```bash
+# 改动后热重载
 dms ipc plugins reload unifiedAppTray
-dms restart
-qs -p /usr/share/quickshell/dms log | tail -n 200
+
+# 看 DMS 日志
+qs -p /run/user/$(id -u)/dms-shell/*/log | tail -n 50
 ```
 
-Create a release archive from a clean checkout:
+目录结构：
 
-```bash
-git archive --format=zip \
-  --prefix=unifiedAppTray-1.0.0/ \
-  --output=unifiedAppTray-v1.0.0.zip \
-  HEAD
+```
+UnifiedAppTrayWidget.qml     交互主体（列表、菜单、拖拽、点击/滚轮语义）
+UnifiedAppTraySettings.qml    设置页
+js/Matching.js                统一匹配核心（QML 与 Node 共用）
+scripts/tray_pid_scan.py      托盘 PID/进程名扫描（QML Process 调用）
+tests/test_matching.js         Matching.js 单测
 ```
 
-## License
+## 许可
 
-MIT License. See [LICENSE](./LICENSE).
+MIT，见 [LICENSE](./LICENSE)。基于 dpxwz/unifiedAppTray 1.4.1，原作者署名保留于 LICENSE 与本节。
