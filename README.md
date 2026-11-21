@@ -44,7 +44,7 @@ windows and StatusNotifier tray into one compact launcher/focus strip.
 ## 安装
 
 ```bash
-git clone https://github.com/<你的用户名>/unifiedAppTray.git \
+git clone https://github.com/PandaAQI/unifiedAppTray.git \
   ~/.config/dms/plugins/unifiedAppTray
 
 dms ipc plugins enable unifiedAppTray
