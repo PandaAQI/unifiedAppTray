@@ -91,3 +91,14 @@ dpxwz/unifiedAppTray 最终发布版，作为本 fork 的基线。
 - 设置项「指示点位置」（indicatorSide）：运行窗口点自动跟 bar 边，
   或由用户固定在上面 / 在下面；红点角标始终镜像到运行点的对角，
   两种状态不挤同一侧。默认 auto，行为与 2.1.1 一致。
+
+## [2.3.0] — 2026-11-21
+
+### 新增
+
+- 红点推送到通知中心（attentionNotifications，默认关）：托盘应用
+  首次请求关注（SNI NeedsAttention）时发一条桌面通知，灵动岛时钟
+  角标 +1、横幅从岛弹出，与 docs/island-integration-design.md 的
+  A 路线对应。同一应用 30 秒节流；红点消退后的新事件会再次提醒；
+  打开开关的瞬间只标记存量、不补发历史；点击图标消费红点后
+  （attentionClickDismiss）自然不再提醒。

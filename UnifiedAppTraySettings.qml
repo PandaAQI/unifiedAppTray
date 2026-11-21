@@ -89,6 +89,13 @@ PluginSettings {
     }
 
     ToggleSetting {
+        settingKey: "attentionNotifications"
+        label: I18n.tr("红点推送到通知中心")
+        description: I18n.tr("托盘应用首次请求关注时发一条桌面通知：灵动岛时钟角标加一、横幅弹出。同一应用半分钟内不重复，红点消退后的新事件会再次提醒。")
+        defaultValue: false
+    }
+
+    ToggleSetting {
         settingKey: "autoOverflow"
         label: I18n.tr("按可用宽度自动收纳")
         description: I18n.tr("分区空间放不下的图标自动收进溢出菜单；关闭后按固定数量上限收纳。")

@@ -94,6 +94,12 @@ PluginComponent {
     // Clicking a NeedsAttention tray item also consumes the badge locally;
     // the app itself usually drops the state on Activate().
     readonly property bool attentionClickDismiss: root.cfg.attentionClickDismiss !== false
+    // Route first-occurrence NeedsAttention to the desktop notification
+    // stream (island clock badge + banner). Default off; enabling marks
+    // pre-existing attention states as seen so only NEW events notify.
+    readonly property bool attentionNotifications: root.cfg.attentionNotifications === true
+    // trayKey -> epoch ms of the last notification sent.
+    property var attentionNotified: ({})
     // 0 = no fixed cap; with autoOverflow the section width decides.
     // Auto mode keeps at least one slot for the overflow button.
     readonly property bool autoOverflow: root.cfg.autoOverflow !== false
@@ -182,6 +188,81 @@ PluginComponent {
     readonly property var windowGroups: buildWindowGroups(sortedToplevels)
     readonly property var unifiedItems: buildUnifiedItems()
     readonly property var displayedItems: buildDisplayedItems()
+
+    // The set of tray keys currently carrying a NeedsAttention badge.
+    // Pure data binding; the dispatch below is the only side-effecting
+    // consumer, from a changed-handler (never inside a binding).
+    readonly property var attentionKeys: {
+        const keys = [];
+        const items = root.unifiedItems || [];
+        for (let i = 0; i < items.length; i++) {
+            const entry = items[i];
+            if (entry && entry.needsAttention === true && entry.trayKey)
+                keys.push(entry.trayKey);
+        }
+        return keys;
+    }
+
+    onAttentionKeysChanged: root.dispatchAttentionNotifications()
+
+    // Enabling the toggle should not notify for attention states that
+    // already existed — mark them as seen, then only new events fire.
+    onAttentionNotificationsChanged: {
+        if (!root.attentionNotifications)
+            return;
+        const keys = root.attentionKeys || [];
+        const now = Date.now();
+        for (let i = 0; i < keys.length; i++)
+            root.attentionNotified[keys[i]] = now;
+    }
+
+    function dispatchAttentionNotifications() {
+        if (!root.attentionNotifications)
+            return;
+        const keys = root.attentionKeys || [];
+        const now = Date.now();
+        const live = {};
+        for (let i = 0; i < keys.length; i++)
+            live[keys[i]] = true;
+        // One notification per key, throttled so a flapping app cannot
+        // spam the stream.
+        for (let i = 0; i < keys.length; i++) {
+            const key = keys[i];
+            if (now - Number(root.attentionNotified[key] || 0) < 30000)
+                continue;
+            const entry = root.findEntryByTrayKey(key);
+            if (!entry)
+                continue;
+            root.attentionNotified[key] = now;
+            root.sendAttentionNotification(entry);
+        }
+        // Forget keys whose attention dropped (after a grace period, in
+        // case a rebuild briefly reported an empty set) so a genuinely
+        // NEW event can notify again.
+        for (const key in root.attentionNotified) {
+            if (!live[key] && now - Number(root.attentionNotified[key]) > 5000)
+                delete root.attentionNotified[key];
+        }
+    }
+
+    function findEntryByTrayKey(trayKey) {
+        const items = root.unifiedItems || [];
+        for (let i = 0; i < items.length; i++) {
+            if (items[i] && items[i].trayKey === trayKey)
+                return items[i];
+        }
+        return null;
+    }
+
+    function sendAttentionNotification(entry) {
+        const title = entry.tooltipText || entry.appId || I18n.tr("系统托盘");
+        const body = I18n.tr("应用请求关注，点击托盘图标即可处理。");
+        const appHint = String(entry.appId || "UnifiedAppTray").replace(/\.desktop$/, "") || "UnifiedAppTray";
+        // Desktop notification stream: the island clock badge counts it
+        // and the banner surfaces from the island. execDetached keeps the
+        // send off the UI thread's critical path.
+        Quickshell.execDetached(["notify-send", "-a", appHint, "-u", "normal", "-c", "unifiedtray-attention", title, body]);
+    }
 
     readonly property string trayIconTintMode: {
         const configuredMode = SettingsData.systemTrayIconTintMode || "none";
